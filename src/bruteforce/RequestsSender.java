@@ -1,5 +1,8 @@
 package bruteforce;
 
+import bruteforce.utils.SpinnerAnimation;
+import javafx.util.Pair;
+
 import java.io.*;
 import java.net.ConnectException;
 import java.net.HttpURLConnection;
@@ -8,16 +11,72 @@ import java.net.URL;
 import java.util.concurrent.TimeUnit;
 
 public class RequestsSender {
-    private URL url;
+    private URL url;                        // url to where send requests
+    private boolean isDebugNeeded;          // shows sent data and response from the server if set
+    private Pair<Integer, String> result;   // object where to put the result
 
-    public RequestsSender(String url) throws MalformedURLException {
+    private volatile SpinnerAnimation animationThread;  // thread that showing some animation while work in process
+    private volatile boolean isAnswerFound;             // skips sending requests if answer already found
+
+    public RequestsSender(String url, boolean isDebugNeeded) throws MalformedURLException {
         this.url = new URL(url);
+        this.isDebugNeeded = isDebugNeeded;
     }
 
-    public boolean send(long data) {
+    /**
+     * <p>Sends given data to server and then checks the response</p>
+     *
+     * @param data to be sent to server
+     * @return true if response contains needed result, false otherwise
+     */
+    public boolean check(long data) {
+        if (isAnswerFound) return false;
+
+        // starting animation if needed
+        if (!isDebugNeeded && animationThread == null) {
+            synchronized (this) {
+                if (animationThread == null) {
+                    animationThread = new SpinnerAnimation();
+                }
+            }
+        }
+
+        Pair<Integer, String> result = sendRequest(data);
+
+        if (isDebugNeeded) {
+            System.out.print("\nData: " + data + "; response: " + result.getValue());
+        }
+
+        if (result.getKey() == 200 && result.getValue().contains("RIGHT")) {
+            isAnswerFound = true;           // setting flag to skip all other attempts
+            if (animationThread != null) {
+                done();                     // stops animation thread
+                System.out.println(" Success!");
+            }
+            this.result = result;
+            return true;
+        }
+
+        return false;
+    }
+
+    public Pair<Integer, String> getResult() {
+        return result;
+    }
+
+    /**
+     * <p>Sends data to server and returns the pair of response code and response body</p>
+     *
+     * @param data to be sent to server
+     * @return the pair of Integer and String, where Integer is response code, and String is response body
+     */
+    private Pair<Integer, String> sendRequest(long data) {
         HttpURLConnection connection = null;
         DataOutputStream outputStream = null;
         BufferedReader inputStream = null;
+
+        int responseCode = -1;
+        String responseBody = "";
 
         boolean repeat = true;  // to prevent skipping some data because of exception
 
@@ -38,15 +97,13 @@ public class RequestsSender {
                 outputStream.flush();
 
                 // getting response
-                int responseCode = connection.getResponseCode();
+                responseCode = connection.getResponseCode();
 
                 while (inputStream == null) {       // waiting for input stream
                     try {
                         inputStream = new BufferedReader(new InputStreamReader(connection.getInputStream()));
                     } catch (ConnectException ignored) {}
                 }
-
-                StringBuilder sb = new StringBuilder();
 
                 // fixing problem with empty response body
                 while (!inputStream.ready()) {
@@ -58,32 +115,33 @@ public class RequestsSender {
                 }
 
                 // reading response body
+                StringBuilder sb = new StringBuilder();
                 while (inputStream.ready()) {
                     sb.append(inputStream.readLine());
                 }
 
-                System.out.println(data + sb.toString());
-
-                // checking result
-                if (responseCode == 200 && sb.toString().contains("RIGHT")) {
-                    System.out.println("response code: " + responseCode);
-                    System.out.println("response body:\n" + sb + "\n");
-                    System.err.println("With value: " + data);
-                    return true;
-                }
+                responseBody = sb.toString();
 
                 repeat = false;     // if we've reached this point - then everything was ok and no need to repeat
 
             } catch (IOException e) {
-                System.err.println("Exception while sending " + data + ": " + e.getLocalizedMessage());
+                if (isDebugNeeded) {
+                    System.err.println("Exception while sending " + data + ": " + e.getLocalizedMessage());
+                }
             } finally {
                 close(connection, inputStream, outputStream);
             }
         } while (repeat);
 
-        return false;
+        return new Pair<>(responseCode, responseBody);
     }
 
+    /**
+     * <p>Closes connections and streams</p>
+     *
+     * @param connection connection object to be closed
+     * @param closeables vararg of objects that could be closed
+     */
     private void close(HttpURLConnection connection, Closeable... closeables) {
         for (Closeable c: closeables) {
             if (c != null) {
@@ -95,6 +153,19 @@ public class RequestsSender {
 
         if (connection != null) {
             connection.disconnect();
+        }
+    }
+
+    /**
+     * <p>Stops animations if needed</p>
+     */
+    public void done() {
+        if (animationThread != null) {
+            animationThread.interrupt();
+            try {
+                animationThread.join();
+            } catch (InterruptedException ignored) {
+            }
         }
     }
 }
