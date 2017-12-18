@@ -8,7 +8,7 @@ import java.net.ConnectException;
 import java.net.HttpURLConnection;
 import java.net.MalformedURLException;
 import java.net.URL;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 
 public class RequestsSender {
     private URL url;                        // url to where send requests
@@ -18,9 +18,12 @@ public class RequestsSender {
     private volatile SpinnerAnimation animationThread;  // thread that showing some animation while work in process
     private volatile boolean isAnswerFound;             // skips sending requests if answer already found
 
+    private final ExecutorService executorService;      // used for waiting for a response from server
+
     public RequestsSender(String url, boolean isDebugNeeded) throws MalformedURLException {
         this.url = new URL(url);
         this.isDebugNeeded = isDebugNeeded;
+        this.executorService = Executors.newCachedThreadPool(); // increases pool size dynamically, reuses old threads
     }
 
     /**
@@ -97,7 +100,12 @@ public class RequestsSender {
                 outputStream.flush();
 
                 // getting response
-                responseCode = connection.getResponseCode();
+                Future<Integer> future = executorService.submit(connection::getResponseCode);
+
+                while (!future.isDone()) {
+                    Thread.yield();     // if response is not ready - switch to other thread
+                }
+                responseCode = future.get();
 
                 while (inputStream == null) {       // waiting for input stream
                     try {
@@ -124,10 +132,12 @@ public class RequestsSender {
 
                 repeat = false;     // if we've reached this point - then everything was ok and no need to repeat
 
-            } catch (IOException e) {
+            } catch (IOException | ExecutionException e) {
                 if (isDebugNeeded) {
                     System.err.println("Exception while sending " + data + ": " + e.getLocalizedMessage());
                 }
+            } catch (InterruptedException e) {
+                e.printStackTrace();
             } finally {
                 close(connection, inputStream, outputStream);
             }
@@ -157,9 +167,18 @@ public class RequestsSender {
     }
 
     /**
-     * <p>Stops animations if needed</p>
+     * <p>Stops executor service and animations if needed</p>
      */
     public void done() {
+        executorService.shutdown();
+        try {
+            TimeUnit.MILLISECONDS.sleep(100);
+        } catch (InterruptedException ignored) {
+            // do nothing
+        } finally {
+            if (!executorService.isTerminated()) executorService.shutdownNow();
+        }
+
         if (animationThread != null) {
             animationThread.interrupt();
             try {
